@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midterm-money-tracker"
+version = "0.1.0"
+description = "A data pipeline for tracking 2026 U.S. Senate campaign finance from OpenFEC."
+authors = [{name = "Public Interest Project"}]
+dependencies = [
+    "requests",
+    "pandas",
+    "python-dotenv",
+    "pydantic",
+    "tqdm",
+    "tenacity",
+    "pyarrow",
+    "jupyter",
+    "ipykernel",
+    "pyyaml"
+]

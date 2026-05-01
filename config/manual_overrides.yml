@@ -1,0 +1,19 @@
+# Manual overrides can force a specific candidate per state and party.
+# This is useful when you want to track a candidate that is known to be the party's main campaign
+# even if the financial totals are not the highest for the party at the moment.
+# Do not add real overrides unless you know the candidate FEC ID and the reason.
+
+senate_2026:
+  # Example format:
+  # TX:
+  #   REP:
+  #     fec_candidate_id: "S8TX00001"
+  #     reason: "Primary winner override"
+  #   DEM:
+  #     fec_candidate_id: "H0DE00012"
+  #     reason: "Party nominee based on primary result"
+
+  # ME:
+  #   DEM:
+  #     fec_candidate_id: "H0ME00034"
+  #     reason: "Manual override example only"
