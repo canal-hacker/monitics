@@ -22,11 +22,8 @@ OUTPUTS_DIR = ROOT / "outputs"
 
 DEFAULT_SELECTED_PATH = PROCESSED_DIR / "senate_top_dem_rep_candidates_2026.csv"
 DEFAULT_TOTALS_PATH = PROCESSED_DIR / "senate_candidate_finance_totals_2026.csv"
+DEFAULT_ALL_CYCLES_TOTALS_PATH = PROCESSED_DIR / "senate_candidate_finance_totals_2026_all_cycles.csv"
 DEFAULT_COMMITTEES_PATH = PROCESSED_DIR / "senate_candidate_committees_2026.csv"
-DEFAULT_OUTPUT_PATH = PROCESSED_DIR / "senate_campaign_contributions_2026.csv"
-DEFAULT_OUTPUTS_COPY_PATH = OUTPUTS_DIR / "senate_campaign_contributions_2026.csv"
-DEFAULT_SHARDS_DIR = INTERIM_DIR / f"senate_campaign_contributions_{settings.ELECTION_CYCLE}"
-DEFAULT_MANIFEST_PATH = DEFAULT_SHARDS_DIR / "manifest.csv"
 
 MANIFEST_FIELDS = [
     "committee_id",
@@ -51,9 +48,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--source",
-        choices=["selected", "totals"],
+        choices=["selected", "totals", "all_cycles"],
         default="selected",
-        help="Use top selected Senate candidates or the full candidate finance totals universe.",
+        help="Use top selected Senate candidates, the default current-cycle totals universe, or the preserved all-cycle totals universe.",
     )
     parser.add_argument(
         "--per-page",
@@ -100,6 +97,9 @@ def load_targets(source: str) -> pd.DataFrame:
             df = df[df["selected_candidate"].apply(_clean_bool_string)].copy()
         if "selected_candidate_name" in df.columns and "candidate_name" not in df.columns:
             df = df.rename(columns={"selected_candidate_name": "candidate_name"})
+    elif source == "all_cycles":
+        totals_path = DEFAULT_ALL_CYCLES_TOTALS_PATH if DEFAULT_ALL_CYCLES_TOTALS_PATH.exists() else DEFAULT_TOTALS_PATH
+        df = load_dataframe(totals_path).copy()
     else:
         df = load_dataframe(DEFAULT_TOTALS_PATH).copy()
 
@@ -154,6 +154,16 @@ def load_targets(source: str) -> pd.DataFrame:
     return df
 
 
+def build_dataset_paths(source: str, individual_only: bool) -> tuple[Path, Path, Path, Path]:
+    dataset_prefix = "senate_individual_contributions" if individual_only else "senate_campaign_contributions"
+    dataset_name = f"{dataset_prefix}_{settings.ELECTION_CYCLE}_{source}"
+    output_path = PROCESSED_DIR / f"{dataset_name}.csv"
+    outputs_copy_path = OUTPUTS_DIR / f"{dataset_name}.csv"
+    shards_dir = INTERIM_DIR / dataset_name / "shards"
+    manifest_path = INTERIM_DIR / dataset_name / "manifest.csv"
+    return output_path, outputs_copy_path, shards_dir, manifest_path
+
+
 def load_completed_committee_ids(manifest_path: Path) -> Set[str]:
     if not manifest_path.exists():
         return set()
@@ -192,7 +202,7 @@ def build_receipt_row(receipt: Dict[str, object], committee_row: pd.Series) -> D
     row["source_manual_override_reason"] = committee_row.get("manual_override_reason")
     row["source_is_principal"] = committee_row.get("is_principal")
     row["fetched_for_cycle"] = settings.ELECTION_CYCLE
-    row["fetched_at"] = pd.Timestamp.utcnow().isoformat()
+    row["fetched_at"] = pd.Timestamp.now(tz="UTC").isoformat()
     return row
 
 
@@ -252,8 +262,10 @@ def save_committee_shard(path: Path, rows: Iterable[Dict[str, object]]) -> int:
     return len(rows)
 
 
-def combine_shards(shards_dir: Path) -> pd.DataFrame:
+def combine_shards(shards_dir: Path, allowed_committee_ids: Optional[Set[str]] = None) -> pd.DataFrame:
     csv_paths = sorted(path for path in shards_dir.glob("*.csv") if path.name != "manifest.csv")
+    if allowed_committee_ids is not None:
+        csv_paths = [path for path in csv_paths if path.stem in allowed_committee_ids]
     if not csv_paths:
         return pd.DataFrame()
 
@@ -264,9 +276,14 @@ def combine_shards(shards_dir: Path) -> pd.DataFrame:
 def main() -> None:
     args = parse_args()
     client = FECClient()
+    output_path, outputs_copy_path, shards_dir, manifest_path = build_dataset_paths(
+        source=args.source,
+        individual_only=args.individual_only,
+    )
 
     targets = load_targets(args.source)
-    completed_committee_ids = load_completed_committee_ids(DEFAULT_MANIFEST_PATH)
+    all_target_committee_ids = set(targets["committee_id"].tolist())
+    completed_committee_ids = load_completed_committee_ids(manifest_path)
     targets = targets[~targets["committee_id"].isin(completed_committee_ids)].copy()
 
     if args.max_committees is not None:
@@ -275,7 +292,6 @@ def main() -> None:
     print(f"Committees remaining for source={args.source}: {len(targets)}")
     print(f"Request interval seconds: {client.request_interval_seconds}")
 
-    shards_dir = DEFAULT_SHARDS_DIR / "shards"
     shards_dir.mkdir(parents=True, exist_ok=True)
 
     for index, (_, committee_row) in enumerate(targets.iterrows(), start=1):
@@ -294,7 +310,7 @@ def main() -> None:
             )
             row_count = save_committee_shard(shard_path, receipts)
             append_manifest_row(
-                DEFAULT_MANIFEST_PATH,
+                manifest_path,
                 {
                     "committee_id": committee_id,
                     "candidate_name": committee_row.get("candidate_name"),
@@ -307,13 +323,13 @@ def main() -> None:
                     "row_count": row_count,
                     "pages_fetched": pages_fetched,
                     "total_pages_reported": total_pages_reported,
-                    "fetched_at": pd.Timestamp.utcnow().isoformat(),
+                    "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
                     "error": "",
                 },
             )
         except Exception as exc:
             append_manifest_row(
-                DEFAULT_MANIFEST_PATH,
+                manifest_path,
                 {
                     "committee_id": committee_id,
                     "candidate_name": committee_row.get("candidate_name"),
@@ -326,21 +342,21 @@ def main() -> None:
                     "row_count": 0,
                     "pages_fetched": 0,
                     "total_pages_reported": 0,
-                    "fetched_at": pd.Timestamp.utcnow().isoformat(),
+                    "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
                     "error": str(exc),
                 },
             )
             print(f"  Failed: {exc}")
 
-    combined = combine_shards(shards_dir)
-    DEFAULT_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DEFAULT_OUTPUTS_COPY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_csv(DEFAULT_OUTPUT_PATH, index=False)
-    combined.to_csv(DEFAULT_OUTPUTS_COPY_PATH, index=False)
+    combined = combine_shards(shards_dir, allowed_committee_ids=all_target_committee_ids)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs_copy_path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(output_path, index=False)
+    combined.to_csv(outputs_copy_path, index=False)
 
-    print(f"Saved combined contribution dataset to {DEFAULT_OUTPUT_PATH}")
-    print(f"Saved outputs copy to {DEFAULT_OUTPUTS_COPY_PATH}")
-    print(f"Manifest path: {DEFAULT_MANIFEST_PATH}")
+    print(f"Saved combined contribution dataset to {output_path}")
+    print(f"Saved outputs copy to {outputs_copy_path}")
+    print(f"Manifest path: {manifest_path}")
     print(f"Combined rows: {len(combined)}")
 
 

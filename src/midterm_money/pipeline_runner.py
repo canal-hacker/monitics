@@ -243,11 +243,79 @@ def _load_checkpoint(
     }
 
 
+def _current_cycle_start_timestamp() -> pd.Timestamp:
+    return pd.Timestamp(year=settings.ELECTION_CYCLE - 1, month=1, day=1)
+
+
+def _prepare_default_totals_view(
+    df_totals_all_cycles: pd.DataFrame,
+    candidate_universe: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    if df_totals_all_cycles.empty:
+        return df_totals_all_cycles.copy()
+
+    df = df_totals_all_cycles.copy()
+    if candidate_universe is not None and not candidate_universe.empty:
+        metadata_cols = ["fec_candidate_id", "candidate_status", "load_date", "office"]
+        available_metadata_cols = [col for col in metadata_cols if col in candidate_universe.columns]
+        if available_metadata_cols:
+            candidate_metadata = candidate_universe[available_metadata_cols].drop_duplicates(subset=["fec_candidate_id"])
+            missing_cols = [col for col in available_metadata_cols if col != "fec_candidate_id" and col not in df.columns]
+            if missing_cols:
+                df = df.merge(candidate_metadata, on="fec_candidate_id", how="left")
+
+    df["coverage_end_date"] = pd.to_datetime(df.get("coverage_end_date"), errors="coerce")
+    df["total_receipts"] = pd.to_numeric(df.get("total_receipts"), errors="coerce").fillna(0)
+    load_date_series = df["load_date"] if "load_date" in df.columns else pd.Series(pd.NaT, index=df.index)
+    df["load_date"] = pd.to_datetime(load_date_series, errors="coerce")
+    candidate_status_series = df["candidate_status"] if "candidate_status" in df.columns else pd.Series("", index=df.index)
+    df["candidate_status"] = candidate_status_series.fillna("").astype(str).str.strip().str.upper()
+    principal_series = (
+        df["is_principal_committee"]
+        if "is_principal_committee" in df.columns
+        else pd.Series(False, index=df.index)
+    )
+    df["is_principal_committee"] = (
+        principal_series
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .isin({"1", "true", "t", "yes", "y"})
+    )
+    status_priority_map = {"C": 0, "P": 1}
+    df["candidate_status_priority"] = df["candidate_status"].map(status_priority_map).fillna(2)
+
+    current_cycle_start = _current_cycle_start_timestamp()
+    df_current = df[df["coverage_end_date"] >= current_cycle_start].copy()
+    if df_current.empty:
+        df_current = df.copy()
+
+    df_current = df_current.sort_values(
+        ["fec_candidate_id", "candidate_status_priority", "coverage_end_date", "is_principal_committee", "total_receipts", "load_date"],
+        ascending=[True, True, False, False, False, False],
+    )
+    df_current = df_current.drop_duplicates(subset=["fec_candidate_id"], keep="first")
+    df_current = df_current.sort_values(
+        ["state", "party", "candidate_name", "candidate_status_priority", "coverage_end_date", "total_receipts", "load_date"],
+        ascending=[True, True, True, True, False, False, False],
+    )
+    df_current = df_current.drop_duplicates(subset=["state", "party", "candidate_name"], keep="first").reset_index(drop=True)
+    df_current["totals_scope"] = f"latest_candidate_row_since_{current_cycle_start.date().isoformat()}"
+
+    if "coverage_end_date" in df_current.columns:
+        df_current["coverage_end_date"] = df_current["coverage_end_date"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+    if "load_date" in df_current.columns:
+        df_current["load_date"] = df_current["load_date"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+    return df_current
+
+
 def _write_pipeline_outputs(
     root: Path,
     output_suffix: str,
     df_committees: pd.DataFrame,
-    df_totals: pd.DataFrame,
+    df_totals_default: pd.DataFrame,
+    df_totals_all_cycles: pd.DataFrame,
     df_selected: pd.DataFrame,
     df_snapshot: pd.DataFrame,
     df_wide: pd.DataFrame,
@@ -257,6 +325,7 @@ def _write_pipeline_outputs(
     filename_map = {
         "committees": "senate_candidate_committees_2026.csv",
         "totals": "senate_candidate_finance_totals_2026.csv",
+        "totals_all_cycles": "senate_candidate_finance_totals_2026_all_cycles.csv",
         "selected": "senate_top_dem_rep_candidates_2026.csv",
         "wide": "senate_two_party_race_universe_2026.csv",
         "snapshot": "senate_money_snapshot_2026.csv",
@@ -266,7 +335,8 @@ def _write_pipeline_outputs(
 
     outputs = {
         "committees": df_committees,
-        "totals": df_totals,
+        "totals": df_totals_default,
+        "totals_all_cycles": df_totals_all_cycles,
         "selected": df_selected,
         "wide": df_wide,
         "snapshot": df_snapshot,
@@ -472,6 +542,9 @@ def run_senate_pipeline(root: Path, options: PipelineOptions) -> None:
                                 "candidate_name": name,
                                 "state": row.get("state"),
                                 "party": row.get("party"),
+                                "candidate_status": row.get("candidate_status"),
+                                "office": row.get("office"),
+                                "load_date": row.get("load_date"),
                                 "committee_id": totals.get("committee_id") or committee_id,
                                 "committee_name": totals.get("committee_name") or committee.get("name"),
                                 "total_receipts": totals.get("receipts"),
@@ -554,14 +627,20 @@ def run_senate_pipeline(root: Path, options: PipelineOptions) -> None:
         raise
 
     df_committees = pd.DataFrame(committee_rows)
-    df_totals = pd.DataFrame(totals_rows)
+    df_totals_all_cycles = pd.DataFrame(totals_rows)
+    df_totals_default = _prepare_default_totals_view(df_totals_all_cycles, candidate_universe=df_candidates)
 
     print("Saved committee and totals tables.", flush=True)
     print("Missing committees count:", len(missing_committees), flush=True)
     print("Missing totals count:", len(missing_totals), flush=True)
+    print(
+        f"Default totals view uses coverage_end_date >= {_current_cycle_start_timestamp().date().isoformat()} when available; "
+        f"default rows={len(df_totals_default)}, all-cycle rows={len(df_totals_all_cycles)}",
+        flush=True,
+    )
 
     print("Selecting top Democratic and Republican candidates by state...", flush=True)
-    if df_totals.empty:
+    if df_totals_default.empty:
         df_selected = pd.DataFrame(
             columns=[
                 "state",
@@ -583,7 +662,10 @@ def run_senate_pipeline(root: Path, options: PipelineOptions) -> None:
             ]
         )
     else:
-        df_selected = select_top_candidates(df_totals, overrides=load_manual_overrides(root / "config" / "manual_overrides.yml"))
+        df_selected = select_top_candidates(
+            df_totals_default,
+            overrides=load_manual_overrides(root / "config" / "manual_overrides.yml"),
+        )
         selected_cols = [
             "state",
             "fec_candidate_id",
@@ -613,7 +695,8 @@ def run_senate_pipeline(root: Path, options: PipelineOptions) -> None:
         root=root,
         output_suffix=options.output_suffix,
         df_committees=df_committees,
-        df_totals=df_totals,
+        df_totals_default=df_totals_default,
+        df_totals_all_cycles=df_totals_all_cycles,
         df_selected=df_selected,
         df_snapshot=df_snapshot,
         df_wide=df_wide,

@@ -7,7 +7,9 @@ A Python data pipeline for tracking campaign finance money in the 2026 U.S. Sena
 - Fetches 2026 U.S. Senate candidates from the OpenFEC API.
 - Normalizes candidate metadata by state, party, and office.
 - Fetches candidate committee mappings and finance totals.
-- Can fetch line-item Schedule A contribution receipts for campaign committees.
+- Writes default campaign-finance outputs using the latest current-cycle row per candidate when available, while preserving an all-cycle totals file for later analysis.
+- Can fetch line-item Schedule A contribution receipts for campaign committees, including individual-only pulls.
+- Can fetch line-item Schedule E independent expenditures for Senate candidates.
 - Can fetch active Polymarket 2026 Senate winner markets and summarize the top two outcomes per state.
 - Selects top Democratic and top Republican candidates in each Senate race using highest total receipts.
 - Exports clean CSV snapshots for analysis.
@@ -15,7 +17,6 @@ A Python data pipeline for tracking campaign finance money in the 2026 U.S. Sena
 ## What this project does NOT do yet
 
 - No House races.
-- No independent expenditures or outside spending unless explicitly added later.
 - No advertising data (Google, Meta, etc.).
 - No lobbying data.
 - No website.
@@ -38,13 +39,26 @@ A Python data pipeline for tracking campaign finance money in the 2026 U.S. Sena
 
 ## Scripted pipeline
 
+Run these commands from the repo root:
+
+```bash
+cd /Users/benedictgordon/Documents/monitics/monitics
+```
+
+If you stay one level higher in `/Users/benedictgordon/Documents/monitics`, prepend `monitics/` to script paths.
+
 You can also run the pipeline from scripts instead of notebooks:
 
 ```bash
 python3 scripts/run_pipeline.py
 ```
 
-The full runner now checkpoints progress and can resume after interruption. You can inspect scope without calling the API:
+The full runner now checkpoints progress and can resume after interruption. By default it writes:
+
+- `senate_candidate_finance_totals_2026.csv`: latest current-cycle row per candidate when available
+- `senate_candidate_finance_totals_2026_all_cycles.csv`: preserved raw all-cycle totals rows
+
+You can inspect scope without calling the API:
 
 ```bash
 python3 scripts/run_pipeline.py --dry-run
@@ -53,11 +67,24 @@ python3 scripts/run_pipeline.py --dry-run
 To build a resumable Schedule A contribution dataset after committee/totals data exists:
 
 ```bash
-python3 scripts/fetch_contributions.py --source selected --max-committees 5 --max-pages-per-committee 2
-python3 scripts/fetch_contributions.py --source selected
+python3 scripts/fetch_contributions.py --source selected --individual-only --max-committees 5 --max-pages-per-committee 2
+python3 scripts/fetch_contributions.py --source selected --individual-only
 ```
 
-The first command is a safe smoke test. The second continues committee-by-committee and resumes from the manifest in `data/interim/`.
+The first command is a safe smoke test. The second continues committee-by-committee and resumes from a dataset-specific manifest in `data/interim/`.
+
+To build a resumable Schedule E outside-spending dataset:
+
+```bash
+python3 scripts/fetch_independent_expenditures.py --source selected --max-candidates 5 --max-pages-per-candidate 2
+python3 scripts/fetch_independent_expenditures.py --source selected
+```
+
+The default Schedule E pull requests `most_recent=true` and excludes notice filings to reduce obvious double counting. If you want notice filings too:
+
+```bash
+python3 scripts/fetch_independent_expenditures.py --source selected --include-notices
+```
 
 To fetch active Polymarket Senate winner markets and a per-state top-two summary:
 
@@ -87,7 +114,9 @@ python3 scripts/run_top_races_pipeline.py --dry-run
 
 - FEC data is updated nightly, but reporting schedules are not real-time.
 - Candidate totals may lag current campaign spending.
+- The default totals output now focuses on current-cycle coverage dates; older totals remain available in the all-cycle file.
 - Multiple candidates from the same party may appear in a state before nominations are finalized.
 - Highest receipts is a simple selection heuristic, not a formal nomination decision.
 - Manual overrides may be required for special cases.
-- Detailed contribution pulls can be large and may need slower pacing to stay within OpenFEC rate limits.
+- Detailed contribution and outside-spending pulls can be large and may need slower pacing to stay within OpenFEC rate limits.
+- Schedule E line items can still require de-duplication decisions around notices and amendments depending on the analysis goal.
