@@ -37,8 +37,13 @@ def select_top_candidates(
     df.loc[df["selected_candidate"], "selection_method"] = "highest_total_receipts"
 
     if overrides:
-        for state, party_overrides in overrides.get("senate_2026", {}).items():
+        senate_overrides = overrides.get("senate_2026") or {}
+        for state, party_overrides in senate_overrides.items():
+            if not party_overrides:
+                continue
             for party_code, override_data in party_overrides.items():
+                if not override_data:
+                    continue
                 candidate_id = override_data.get("fec_candidate_id")
                 reason = override_data.get("reason")
                 if not candidate_id:

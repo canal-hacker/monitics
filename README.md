@@ -8,6 +8,7 @@ A Python data pipeline for tracking campaign finance money in the 2026 U.S. Sena
 - Normalizes candidate metadata by state, party, and office.
 - Fetches candidate committee mappings and finance totals.
 - Can fetch line-item Schedule A contribution receipts for campaign committees.
+- Can fetch active Polymarket 2026 Senate winner markets and summarize the top two outcomes per state.
 - Selects top Democratic and top Republican candidates in each Senate race using highest total receipts.
 - Exports clean CSV snapshots for analysis.
 
@@ -16,7 +17,6 @@ A Python data pipeline for tracking campaign finance money in the 2026 U.S. Sena
 - No House races.
 - No independent expenditures or outside spending unless explicitly added later.
 - No advertising data (Google, Meta, etc.).
-- No prediction market or Polymarket data.
 - No lobbying data.
 - No website.
 
@@ -44,6 +44,12 @@ You can also run the pipeline from scripts instead of notebooks:
 python3 scripts/run_pipeline.py
 ```
 
+The full runner now checkpoints progress and can resume after interruption. You can inspect scope without calling the API:
+
+```bash
+python3 scripts/run_pipeline.py --dry-run
+```
+
 To build a resumable Schedule A contribution dataset after committee/totals data exists:
 
 ```bash
@@ -52,6 +58,19 @@ python3 scripts/fetch_contributions.py --source selected
 ```
 
 The first command is a safe smoke test. The second continues committee-by-committee and resumes from the manifest in `data/interim/`.
+
+To fetch active Polymarket Senate winner markets and a per-state top-two summary:
+
+```bash
+python3 scripts/fetch_polymarket_senate.py
+```
+
+To run a faster first-pass finance pull for active Polymarket Senate race states only:
+
+```bash
+python3 scripts/run_top_races_pipeline.py
+python3 scripts/run_top_races_pipeline.py --dry-run
+```
 
 ## Key concepts
 

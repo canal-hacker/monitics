@@ -17,6 +17,7 @@ class Settings:
     USE_DEMO_KEY: bool
     FEC_REQUEST_INTERVAL_SECONDS: float
     FEC_RATE_LIMIT_SLEEP_SECONDS: float
+    POLYMARKET_GAMMA_BASE_URL: str
 
 
 def _load_settings() -> Settings:
@@ -27,6 +28,7 @@ def _load_settings() -> Settings:
     use_demo_key = api_key.strip() == "DEMO_KEY"
     request_interval_seconds = float(os.getenv("FEC_REQUEST_INTERVAL_SECONDS", "0.75"))
     rate_limit_sleep_seconds = float(os.getenv("FEC_RATE_LIMIT_SLEEP_SECONDS", "30"))
+    polymarket_gamma_base_url = os.getenv("POLYMARKET_GAMMA_BASE_URL", "https://gamma-api.polymarket.com")
 
     return Settings(
         FEC_API_KEY=api_key,
@@ -36,6 +38,7 @@ def _load_settings() -> Settings:
         USE_DEMO_KEY=use_demo_key,
         FEC_REQUEST_INTERVAL_SECONDS=request_interval_seconds,
         FEC_RATE_LIMIT_SLEEP_SECONDS=rate_limit_sleep_seconds,
+        POLYMARKET_GAMMA_BASE_URL=polymarket_gamma_base_url.rstrip("/"),
     )
 
 
