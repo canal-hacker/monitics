@@ -1,6 +1,6 @@
 from pathlib import Path
 import sys
-
+import time
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,14 +23,22 @@ def is_principal_committee(committee: dict) -> bool:
     return designation == 'P' or 'principal' in designation_full
 
 
+def format_duration(seconds: float) -> str:
+    total_seconds = max(int(seconds), 0)
+    minutes, secs = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f'{hours:02d}:{minutes:02d}:{secs:02d}'
+
+
 def main() -> None:
     client = FECClient()
+    progress_every = 25
 
     candidates_path = ROOT / 'data' / 'processed' / 'senate_candidates_2026_all.csv'
     outputs_candidate_path = ROOT / 'outputs' / 'senate_candidates_2026_all.csv'
 
     if not candidates_path.exists():
-        print('Fetching 2026 Senate candidates...')
+        print('Fetching 2026 Senate candidates...', flush=True)
         query_params = {
             'cycle': settings.ELECTION_CYCLE,
             'office': settings.OFFICE,
@@ -51,18 +59,27 @@ def main() -> None:
         df_clean = df_clean.rename(columns={'candidate_id': 'fec_candidate_id'})
         save_csv(df_clean, candidates_path)
         save_csv(df_clean, outputs_candidate_path)
-        print('Saved candidate universe to', candidates_path)
+        print('Saved candidate universe to', candidates_path, flush=True)
     else:
         df_clean = pd.read_csv(candidates_path, dtype=str)
-        print('Loaded existing candidate universe, rows=', len(df_clean))
+        print('Loaded existing candidate universe, rows=', len(df_clean), flush=True)
 
     committee_rows = []
     totals_rows = []
     missing_committees = []
     missing_totals = []
 
-    print('Fetching committees and totals for', len(df_clean), 'candidates...')
+    total_candidates = len(df_clean)
+    loop_started_at = time.monotonic()
+    print(
+        'Fetching committees and totals for',
+        total_candidates,
+        'candidates...',
+        f'(request interval={client.request_interval_seconds}s, rate-limit sleep={client.rate_limit_sleep_seconds}s)',
+        flush=True,
+    )
     for idx, row in df_clean.iterrows():
+        candidate_number = idx + 1
         candidate_id = row.get('fec_candidate_id')
         name = row.get('name')
         if not candidate_id:
@@ -73,6 +90,7 @@ def main() -> None:
             committee_data = client.get(f'/candidate/{candidate_id}/committees/', params={'per_page': 100})
         except Exception as exc:
             missing_committees.append((candidate_id, str(exc)))
+            print(f'Committee lookup failed for {candidate_id} ({name}): {exc}', flush=True)
 
         committee_results = committee_data.get('results', []) if committee_data else []
         for committee in committee_results:
@@ -107,6 +125,7 @@ def main() -> None:
                 totals_data = client.get(f'/committee/{committee_id}/totals/')
             except Exception as exc:
                 missing_totals.append((candidate_id, f'{committee_id}: {exc}'))
+                print(f'Totals lookup failed for {candidate_id} ({name}) via {committee_id}: {exc}', flush=True)
                 continue
 
             totals_results = totals_data.get('results', []) if totals_data else []
@@ -144,6 +163,20 @@ def main() -> None:
         if not committee_totals_found:
             missing_totals.append((candidate_id, 'No totals returned'))
 
+        if candidate_number % progress_every == 0 or candidate_number == total_candidates:
+            elapsed = time.monotonic() - loop_started_at
+            rate = candidate_number / elapsed if elapsed > 0 else 0
+            remaining = total_candidates - candidate_number
+            eta_seconds = remaining / rate if rate > 0 else 0
+            print(
+                f'Progress {candidate_number}/{total_candidates} candidates | '
+                f'elapsed {format_duration(elapsed)} | '
+                f'eta {format_duration(eta_seconds)} | '
+                f'committee rows={len(committee_rows)} | totals rows={len(totals_rows)} | '
+                f'missing committees={len(missing_committees)} | missing totals={len(missing_totals)}',
+                flush=True,
+            )
+
     df_committees = pd.DataFrame(committee_rows)
     df_totals = pd.DataFrame(totals_rows)
 
@@ -159,10 +192,11 @@ def main() -> None:
     save_csv(df_totals, ROOT / 'data' / 'processed' / 'senate_candidate_finance_totals_2026.csv')
     save_csv(df_totals, ROOT / 'outputs' / 'senate_candidate_finance_totals_2026.csv')
 
-    print('Saved committee and totals tables.')
-    print('Missing committees count:', len(missing_committees))
-    print('Missing totals count:', len(missing_totals))
+    print('Saved committee and totals tables.', flush=True)
+    print('Missing committees count:', len(missing_committees), flush=True)
+    print('Missing totals count:', len(missing_totals), flush=True)
 
+    print('Selecting top Democratic and Republican candidates by state...', flush=True)
     df_selected = select_top_candidates(df_totals, overrides=load_manual_overrides(ROOT / 'config' / 'manual_overrides.yml'))
     selected_cols = [
         'state', 'fec_candidate_id', 'candidate_name', 'committee_id', 'total_receipts',
@@ -173,7 +207,7 @@ def main() -> None:
     df_selected = df_selected[selected_cols].rename(columns={'candidate_name': 'selected_candidate_name'})
     save_csv(df_selected, ROOT / 'data' / 'processed' / 'senate_top_dem_rep_candidates_2026.csv')
     save_csv(df_selected, ROOT / 'outputs' / 'senate_top_dem_rep_candidates_2026.csv')
-    print('Saved top candidate selection files.')
+    print('Saved top candidate selection files.', flush=True)
 
     wide = df_selected[df_selected['selected_candidate'] == True].pivot(
         index='state',
@@ -193,7 +227,7 @@ def main() -> None:
     wide.columns = [f'{col[0].lower()}_{col[1].lower()}' for col in wide.columns]
     wide = wide.reset_index()
     save_csv(wide, ROOT / 'outputs' / 'senate_two_party_race_universe_2026.csv')
-    print('Saved two-party race universe file.')
+    print('Saved two-party race universe file.', flush=True)
 
     snapshot_rows = []
     for _, row in wide.iterrows():
@@ -228,7 +262,7 @@ def main() -> None:
         - pd.to_numeric(df_snapshot['rep_cash_on_hand'], errors='coerce').fillna(0)
     )
     save_csv(df_snapshot, ROOT / 'outputs' / 'senate_money_snapshot_2026.csv')
-    print('Saved final snapshot file.')
+    print('Saved final snapshot file.', flush=True)
 
 
 if __name__ == '__main__':

@@ -69,6 +69,10 @@ class FECClient:
         if response.status_code == 429:
             retry_after = self._retry_after_seconds(response)
             if retry_after > 0:
+                print(
+                    f"[FEC] Rate limit hit for {endpoint}; sleeping {retry_after:.1f}s before retry.",
+                    flush=True,
+                )
                 time.sleep(retry_after)
             raise requests.HTTPError(
                 f"Rate limit exceeded for {endpoint}; retrying after {retry_after:.1f}s",
