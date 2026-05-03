@@ -10,3 +10,4 @@ Expected output files:
 - `senate_top_dem_rep_candidates_2026.csv`
 - `senate_two_party_race_universe_2026.csv`
 - `senate_money_snapshot_2026.csv`
+- `senate_campaign_contributions_2026.csv`

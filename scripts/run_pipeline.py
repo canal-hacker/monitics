@@ -17,6 +17,12 @@ def save_csv(df: pd.DataFrame, path: Path) -> None:
     df.to_csv(path, index=False)
 
 
+def is_principal_committee(committee: dict) -> bool:
+    designation = committee.get('designation')
+    designation_full = (committee.get('designation_full') or '').lower()
+    return designation == 'P' or 'principal' in designation_full
+
+
 def main() -> None:
     client = FECClient()
 
@@ -63,19 +69,10 @@ def main() -> None:
             continue
 
         committee_data = None
-        totals_data = None
         try:
             committee_data = client.get(f'/candidate/{candidate_id}/committees/', params={'per_page': 100})
         except Exception as exc:
             missing_committees.append((candidate_id, str(exc)))
-
-        try:
-            totals_data = client.get(f'/candidate/{candidate_id}/totals/')
-        except Exception as exc:
-            try:
-                totals_data = client.get(f'/candidates/{candidate_id}/totals/')
-            except Exception as exc2:
-                missing_totals.append((candidate_id, f'{exc} | {exc2}'))
 
         committee_results = committee_data.get('results', []) if committee_data else []
         for committee in committee_results:
@@ -88,28 +85,63 @@ def main() -> None:
                 'designation_full': committee.get('designation_full'),
                 'committee_type': committee.get('committee_type'),
                 'committee_type_full': committee.get('committee_type_full'),
-                'is_principal': (committee.get('designation') == 'P' or (committee.get('designation_full') or '').lower().find('principal') >= 0),
+                'is_principal': is_principal_committee(committee),
             })
 
-        totals_results = totals_data.get('results', []) if totals_data else []
-        if totals_results:
+        totals_targets = [committee for committee in committee_results if is_principal_committee(committee)]
+        if not totals_targets:
+            totals_targets = committee_results
+
+        if not totals_targets:
+            missing_totals.append((candidate_id, 'No committees returned for candidate'))
+            continue
+
+        committee_totals_found = False
+        for committee in totals_targets:
+            committee_id = committee.get('committee_id')
+            if not committee_id:
+                continue
+
+            totals_data = None
+            try:
+                totals_data = client.get(f'/committee/{committee_id}/totals/')
+            except Exception as exc:
+                missing_totals.append((candidate_id, f'{committee_id}: {exc}'))
+                continue
+
+            totals_results = totals_data.get('results', []) if totals_data else []
+            if not totals_results:
+                continue
+
+            committee_totals_found = True
             for totals in totals_results:
                 totals_rows.append({
                     'fec_candidate_id': candidate_id,
                     'candidate_name': name,
                     'state': row.get('state'),
                     'party': row.get('party'),
-                    'committee_id': totals.get('committee_id'),
-                    'total_receipts': totals.get('total_receipts'),
-                    'total_disbursements': totals.get('total_disbursements'),
-                    'cash_on_hand_end_period': totals.get('cash_on_hand_end_period'),
-                    'cash_on_hand': totals.get('cash_on_hand'),
-                    'debts_owed_by_committee': totals.get('debts_owed_by_committee'),
-                    'coverage_end_date': totals.get('coverage_end_date'),
+                    'committee_id': totals.get('committee_id') or committee_id,
+                    'committee_name': totals.get('committee_name') or committee.get('name'),
+                    'total_receipts': totals.get('receipts'),
+                    'total_disbursements': totals.get('disbursements'),
+                    'cash_on_hand_end_period': totals.get('last_cash_on_hand_end_period'),
+                    'cash_on_hand': totals.get('last_cash_on_hand_end_period'),
+                    'debts_owed_by_committee': totals.get('last_debts_owed_by_committee'),
+                    'coverage_start_date': totals.get('coverage_start_date'),
+                    'coverage_end_date': totals.get('coverage_end_date') or totals.get('transaction_coverage_date'),
                     'cycle': totals.get('cycle'),
-                    'source_endpoint': 'candidate_totals',
+                    'individual_contributions': totals.get('individual_contributions'),
+                    'individual_itemized_contributions': totals.get('individual_itemized_contributions'),
+                    'individual_unitemized_contributions': totals.get('individual_unitemized_contributions'),
+                    'candidate_contribution': totals.get('candidate_contribution'),
+                    'other_receipts': totals.get('other_receipts'),
+                    'last_report_type_full': totals.get('last_report_type_full'),
+                    'last_report_year': totals.get('last_report_year'),
+                    'is_principal_committee': is_principal_committee(committee),
+                    'source_endpoint': 'committee_totals',
                 })
-        else:
+
+        if not committee_totals_found:
             missing_totals.append((candidate_id, 'No totals returned'))
 
     df_committees = pd.DataFrame(committee_rows)
@@ -146,7 +178,17 @@ def main() -> None:
     wide = df_selected[df_selected['selected_candidate'] == True].pivot(
         index='state',
         columns='party_normalized',
-        values=['selected_candidate_name', 'fec_candidate_id', 'committee_id', 'total_receipts']
+        values=[
+            'selected_candidate_name',
+            'fec_candidate_id',
+            'committee_id',
+            'total_receipts',
+            'total_disbursements',
+            'cash_on_hand',
+            'debts_owed_by_committee',
+            'coverage_end_date',
+            'selection_method',
+        ]
     )
     wide.columns = [f'{col[0].lower()}_{col[1].lower()}' for col in wide.columns]
     wide = wide.reset_index()
@@ -161,27 +203,30 @@ def main() -> None:
             'dem_fec_candidate_id': row.get('fec_candidate_id_dem'),
             'dem_committee_id': row.get('committee_id_dem'),
             'dem_total_receipts': row.get('total_receipts_dem'),
-            'dem_total_disbursements': None,
-            'dem_cash_on_hand': None,
-            'dem_debts_owed_by_committee': None,
-            'dem_coverage_end_date': None,
-            'dem_selection_method': None,
+            'dem_total_disbursements': row.get('total_disbursements_dem'),
+            'dem_cash_on_hand': row.get('cash_on_hand_dem'),
+            'dem_debts_owed_by_committee': row.get('debts_owed_by_committee_dem'),
+            'dem_coverage_end_date': row.get('coverage_end_date_dem'),
+            'dem_selection_method': row.get('selection_method_dem'),
             'rep_candidate_name': row.get('selected_candidate_name_rep'),
             'rep_fec_candidate_id': row.get('fec_candidate_id_rep'),
             'rep_committee_id': row.get('committee_id_rep'),
             'rep_total_receipts': row.get('total_receipts_rep'),
-            'rep_total_disbursements': None,
-            'rep_cash_on_hand': None,
-            'rep_debts_owed_by_committee': None,
-            'rep_coverage_end_date': None,
-            'rep_selection_method': None,
+            'rep_total_disbursements': row.get('total_disbursements_rep'),
+            'rep_cash_on_hand': row.get('cash_on_hand_rep'),
+            'rep_debts_owed_by_committee': row.get('debts_owed_by_committee_rep'),
+            'rep_coverage_end_date': row.get('coverage_end_date_rep'),
+            'rep_selection_method': row.get('selection_method_rep'),
             'direct_money_data_pulled_at': pd.Timestamp.now().isoformat(),
-            'notes': 'Snapshot built from top candidate selection. Some fields are placeholders pending upstream totals enrichment.',
+            'notes': 'Snapshot built from principal committee totals for the selected Senate candidates.',
         })
 
     df_snapshot = pd.DataFrame(snapshot_rows)
     df_snapshot['dem_minus_rep_total_receipts'] = pd.to_numeric(df_snapshot['dem_total_receipts'], errors='coerce').fillna(0) - pd.to_numeric(df_snapshot['rep_total_receipts'], errors='coerce').fillna(0)
-    df_snapshot['dem_minus_rep_cash_on_hand'] = None
+    df_snapshot['dem_minus_rep_cash_on_hand'] = (
+        pd.to_numeric(df_snapshot['dem_cash_on_hand'], errors='coerce').fillna(0)
+        - pd.to_numeric(df_snapshot['rep_cash_on_hand'], errors='coerce').fillna(0)
+    )
     save_csv(df_snapshot, ROOT / 'outputs' / 'senate_money_snapshot_2026.csv')
     print('Saved final snapshot file.')
 

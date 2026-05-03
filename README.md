@@ -7,6 +7,7 @@ A Python data pipeline for tracking campaign finance money in the 2026 U.S. Sena
 - Fetches 2026 U.S. Senate candidates from the OpenFEC API.
 - Normalizes candidate metadata by state, party, and office.
 - Fetches candidate committee mappings and finance totals.
+- Can fetch line-item Schedule A contribution receipts for campaign committees.
 - Selects top Democratic and top Republican candidates in each Senate race using highest total receipts.
 - Exports clean CSV snapshots for analysis.
 
@@ -35,6 +36,23 @@ A Python data pipeline for tracking campaign finance money in the 2026 U.S. Sena
    - `notebooks/03_select_top_dem_rep_candidates.ipynb`
    - `notebooks/04_build_senate_money_snapshot.ipynb`
 
+## Scripted pipeline
+
+You can also run the pipeline from scripts instead of notebooks:
+
+```bash
+python3 scripts/run_pipeline.py
+```
+
+To build a resumable Schedule A contribution dataset after committee/totals data exists:
+
+```bash
+python3 scripts/fetch_contributions.py --source selected --max-committees 5 --max-pages-per-committee 2
+python3 scripts/fetch_contributions.py --source selected
+```
+
+The first command is a safe smoke test. The second continues committee-by-committee and resumes from the manifest in `data/interim/`.
+
 ## Key concepts
 
 - **Candidate**: The person running for office as reported by the FEC.
@@ -53,3 +71,4 @@ A Python data pipeline for tracking campaign finance money in the 2026 U.S. Sena
 - Multiple candidates from the same party may appear in a state before nominations are finalized.
 - Highest receipts is a simple selection heuristic, not a formal nomination decision.
 - Manual overrides may be required for special cases.
+- Detailed contribution pulls can be large and may need slower pacing to stay within OpenFEC rate limits.

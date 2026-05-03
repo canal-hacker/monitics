@@ -15,6 +15,8 @@ class Settings:
     ELECTION_CYCLE: int
     OFFICE: str
     USE_DEMO_KEY: bool
+    FEC_REQUEST_INTERVAL_SECONDS: float
+    FEC_RATE_LIMIT_SLEEP_SECONDS: float
 
 
 def _load_settings() -> Settings:
@@ -23,6 +25,8 @@ def _load_settings() -> Settings:
     election_cycle = int(os.getenv("ELECTION_CYCLE", "2026"))
     office = os.getenv("OFFICE", "S")
     use_demo_key = api_key.strip() == "DEMO_KEY"
+    request_interval_seconds = float(os.getenv("FEC_REQUEST_INTERVAL_SECONDS", "0.75"))
+    rate_limit_sleep_seconds = float(os.getenv("FEC_RATE_LIMIT_SLEEP_SECONDS", "30"))
 
     return Settings(
         FEC_API_KEY=api_key,
@@ -30,6 +34,8 @@ def _load_settings() -> Settings:
         ELECTION_CYCLE=election_cycle,
         OFFICE=office,
         USE_DEMO_KEY=use_demo_key,
+        FEC_REQUEST_INTERVAL_SECONDS=request_interval_seconds,
+        FEC_RATE_LIMIT_SLEEP_SECONDS=rate_limit_sleep_seconds,
     )
 
 

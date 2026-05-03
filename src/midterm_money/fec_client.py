@@ -11,9 +11,26 @@ from .config import settings
 
 
 class FECClient:
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        request_interval_seconds: Optional[float] = None,
+        rate_limit_sleep_seconds: Optional[float] = None,
+    ):
         self.api_key = api_key or settings.FEC_API_KEY
         self.base_url = (base_url or settings.FEC_BASE_URL).rstrip("/")
+        self.request_interval_seconds = (
+            settings.FEC_REQUEST_INTERVAL_SECONDS
+            if request_interval_seconds is None
+            else request_interval_seconds
+        )
+        self.rate_limit_sleep_seconds = (
+            settings.FEC_RATE_LIMIT_SLEEP_SECONDS
+            if rate_limit_sleep_seconds is None
+            else rate_limit_sleep_seconds
+        )
+        self._last_request_monotonic: Optional[float] = None
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
 
@@ -22,14 +39,41 @@ class FECClient:
             return endpoint
         return f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
+    def _wait_for_request_slot(self) -> None:
+        if self.request_interval_seconds <= 0 or self._last_request_monotonic is None:
+            return
+
+        elapsed = time.monotonic() - self._last_request_monotonic
+        remaining = self.request_interval_seconds - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def _retry_after_seconds(self, response: Response) -> float:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after is None:
+            return self.rate_limit_sleep_seconds
+
+        try:
+            return max(float(retry_after), 0.0)
+        except ValueError:
+            return self.rate_limit_sleep_seconds
+
     def _request(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Response:
         params = params.copy() if params else {}
         params["api_key"] = self.api_key
         url = self._build_url(endpoint)
 
+        self._wait_for_request_slot()
         response = self.session.get(url, params=params, timeout=30)
+        self._last_request_monotonic = time.monotonic()
         if response.status_code == 429:
-            raise requests.HTTPError("Rate limit exceeded", response=response)
+            retry_after = self._retry_after_seconds(response)
+            if retry_after > 0:
+                time.sleep(retry_after)
+            raise requests.HTTPError(
+                f"Rate limit exceeded for {endpoint}; retrying after {retry_after:.1f}s",
+                response=response,
+            )
         response.raise_for_status()
         return response
 
@@ -66,7 +110,6 @@ class FECClient:
             if pages is None or current_page >= pages:
                 break
             page = current_page + 1
-            time.sleep(0.5)
 
     def fetch_all(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         return list(self.paginate(endpoint, params=params))
