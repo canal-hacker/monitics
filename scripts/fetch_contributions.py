@@ -42,6 +42,23 @@ MANIFEST_FIELDS = [
 ]
 
 
+def _parse_int(value: object) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _committee_fetch_complete(row: Dict[str, object]) -> bool:
+    if row.get("status") != "ok":
+        return False
+    pages_fetched = _parse_int(row.get("pages_fetched"))
+    total_pages_reported = _parse_int(row.get("total_pages_reported"))
+    if total_pages_reported <= 0:
+        return pages_fetched > 0
+    return pages_fetched >= total_pages_reported
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fetch line-item Schedule A contribution receipts for Senate campaign committees."
@@ -172,7 +189,7 @@ def load_completed_committee_ids(manifest_path: Path) -> Set[str]:
     with manifest_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
-            if row.get("status") == "ok" and row.get("committee_id"):
+            if row.get("committee_id") and _committee_fetch_complete(row):
                 completed.add(row["committee_id"])
     return completed
 
@@ -309,6 +326,9 @@ def main() -> None:
                 max_pages_per_committee=args.max_pages_per_committee,
             )
             row_count = save_committee_shard(shard_path, receipts)
+            status = "ok"
+            if args.max_pages_per_committee is not None and pages_fetched < total_pages_reported:
+                status = "partial"
             append_manifest_row(
                 manifest_path,
                 {
@@ -319,7 +339,7 @@ def main() -> None:
                     "party": committee_row.get("party"),
                     "party_normalized": committee_row.get("party_normalized"),
                     "source_scope": committee_row.get("source_scope"),
-                    "status": "ok",
+                    "status": status,
                     "row_count": row_count,
                     "pages_fetched": pages_fetched,
                     "total_pages_reported": total_pages_reported,

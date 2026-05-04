@@ -43,6 +43,23 @@ MANIFEST_FIELDS = [
 ]
 
 
+def _parse_int(value: object) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _candidate_fetch_complete(row: Dict[str, object]) -> bool:
+    if row.get("status") != "ok":
+        return False
+    requests_fetched = _parse_int(row.get("requests_fetched"))
+    total_pages_reported = _parse_int(row.get("total_pages_reported"))
+    if total_pages_reported <= 0:
+        return requests_fetched > 0
+    return requests_fetched >= total_pages_reported
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fetch line-item Schedule E independent expenditures for Senate candidates."
@@ -177,7 +194,7 @@ def load_completed_candidate_ids(manifest_path: Path) -> Set[str]:
     with manifest_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
-            if row.get("status") == "ok" and row.get("fec_candidate_id"):
+            if row.get("fec_candidate_id") and _candidate_fetch_complete(row):
                 completed.add(row["fec_candidate_id"])
     return completed
 
@@ -338,6 +355,9 @@ def main() -> None:
                 support_oppose=args.support_oppose,
             )
             row_count = save_candidate_shard(shard_path, expenditures)
+            status = "ok"
+            if args.max_pages_per_candidate is not None and requests_fetched < total_pages_reported:
+                status = "partial"
             append_manifest_row(
                 manifest_path,
                 {
@@ -350,7 +370,7 @@ def main() -> None:
                     "include_notices": args.include_notices,
                     "most_recent_only": not args.include_non_most_recent,
                     "support_oppose_indicator": args.support_oppose or "",
-                    "status": "ok",
+                    "status": status,
                     "row_count": row_count,
                     "requests_fetched": requests_fetched,
                     "total_pages_reported": total_pages_reported,
