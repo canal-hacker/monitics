@@ -10,3 +10,10 @@ dist/
 build/
 .pytest_cache/
 .env.*
+
+# Local checkpoint and shard data for resumable fetches.
+data/interim/
+
+# Full non-individual Schedule A exports can exceed GitHub's file size limit.
+data/processed/senate_campaign_contributions_*.csv
+outputs/senate_campaign_contributions_*.csv

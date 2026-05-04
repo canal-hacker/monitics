@@ -72,6 +72,8 @@ python3 scripts/fetch_contributions.py --source selected --individual-only
 ```
 
 The first command is a safe smoke test. The second continues committee-by-committee and resumes from a dataset-specific manifest in `data/interim/`.
+Files in `data/interim/` are local resume checkpoints and are intentionally gitignored.
+Full non-individual Schedule A exports are also intended to stay local because they can exceed GitHub's file size limits.
 
 To build a resumable Schedule E outside-spending dataset:
 

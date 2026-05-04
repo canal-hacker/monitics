@@ -1,9 +1,0 @@
-fec_candidate_id,candidate_name,state,party,party_normalized,source_scope,include_notices,most_recent_only,support_oppose_indicator,status,row_count,requests_fetched,total_pages_reported,fetched_at,error
-H6KS01179,"MARSHALL, ROGER W",KS,REP,REP,selected,False,True,,error,0,0,0,2026-05-03T13:28:35.140836+00:00,"HTTPSConnectionPool(host='api.open.fec.gov', port=443): Max retries exceeded with url: /v1/schedules/schedule_e/?candidate_id=H6KS01179&candidate_office=S&cycle=2026&per_page=100&sort=-expenditure_date&is_notice=False&most_recent=True&api_key=xu5iwt4g5h4Sa9n2PKCCDRFchWtJD60pbvn5XAAH (Caused by NameResolutionError(""HTTPSConnection(host='api.open.fec.gov', port=443): Failed to resolve 'api.open.fec.gov' ([Errno 8] nodename nor servname provided, or not known)""))"
-H6KS01179,"MARSHALL, ROGER W",KS,REP,REP,selected,False,True,,ok,4,1,1,2026-05-03T13:29:19.507657+00:00,
-S6AK00276,"PELTOLA, MARY",AK,DEM,DEM,selected,False,True,,ok,4,1,1,2026-05-03T13:32:11.300955+00:00,
-S4AK00214,"SULLIVAN, DAN",AK,REP,REP,selected,False,True,,ok,5,1,1,2026-05-03T14:08:39.454128+00:00,
-S6AL00435,"SWEETSER, KYLE",AL,DEM,DEM,selected,False,True,,ok,0,1,1,2026-05-03T14:08:40.678617+00:00,
-S2AL00145,"BRITT, KATIE BOYD",AL,REP,REP,selected,False,True,,ok,0,1,1,2026-05-03T14:08:41.913321+00:00,
-S6AR00199,"SHOFFNER, HALLIE",AR,DEM,DEM,selected,False,True,,ok,7,1,1,2026-05-03T14:08:43.254263+00:00,
-S4AR00103,"COTTON, THOMAS",AR,REP,REP,selected,False,True,,ok,3,1,1,2026-05-03T14:08:44.584395+00:00,
