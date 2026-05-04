@@ -21,6 +21,28 @@ A Python data pipeline for tracking campaign finance money in the 2026 U.S. Sena
 - No lobbying data.
 - No website.
 
+## Status snapshot (2026-05-04)
+
+- Base official FEC pipeline outputs are present in repo for the 2026 Senate universe:
+  `senate_candidates_2026_all.csv` (`1,133` rows),
+  `senate_candidate_committees_2026.csv` (`2,468` rows),
+  `senate_candidate_finance_totals_2026.csv` (`600` rows),
+  and `senate_candidate_finance_totals_2026_all_cycles.csv` (`2,880` rows).
+- The selected-race layer is present for all `50` states:
+  `senate_top_dem_rep_candidates_2026.csv` contains `100` selected target rows
+  and `senate_money_snapshot_2026.csv` contains `50` state snapshots.
+- Default Schedule E independent expenditures for `--source selected` are complete:
+  `senate_independent_expenditures_2026_selected.csv` has `1,204` rows and covers all `100`
+  selected target candidates. By design this default view excludes notice filings and requests
+  `most_recent=true` to reduce obvious double counting.
+- Schedule A individual-only contributions for `--source selected` are still in progress locally:
+  `2/100` selected committees are fully complete and `98` remain.
+- Full Schedule A contributions for `--source selected` are also still in progress locally:
+  `7/100` selected committees are fully complete and `93` remain.
+- `data/interim/` contains local resume checkpoints and shard CSVs for long-running line-item pulls.
+  These files are intentionally gitignored because they can grow too large for GitHub.
+- Line-item pulls have only been run for `--source selected` so far, not for the full Senate universe.
+
 ## Setup
 
 1. Create a Python 3.11+ virtual environment.
