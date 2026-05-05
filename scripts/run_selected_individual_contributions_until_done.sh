@@ -23,7 +23,10 @@ while true; do
     exit 0
   fi
 
-  FEC_REQUEST_INTERVAL_SECONDS="${FEC_REQUEST_INTERVAL_SECONDS:-1.0}" \
+  echo "$(timestamp) request_interval=${FEC_REQUEST_INTERVAL_SECONDS:-1.5} request_timeout=${FEC_REQUEST_TIMEOUT_SECONDS:-120}"
+
+  FEC_REQUEST_INTERVAL_SECONDS="${FEC_REQUEST_INTERVAL_SECONDS:-1.5}" \
+    FEC_REQUEST_TIMEOUT_SECONDS="${FEC_REQUEST_TIMEOUT_SECONDS:-120}" \
     .venv/bin/python -u scripts/fetch_contributions.py --source selected --individual-only
   rc=$?
   echo "$(timestamp) fetch_exit_code=$rc"

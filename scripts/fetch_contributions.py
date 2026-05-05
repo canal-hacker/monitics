@@ -42,6 +42,14 @@ MANIFEST_FIELDS = [
 ]
 
 
+class CommitteeFetchError(Exception):
+    def __init__(self, message: str, pages_fetched: int, total_pages_reported: int, row_count: int):
+        super().__init__(message)
+        self.pages_fetched = pages_fetched
+        self.total_pages_reported = total_pages_reported
+        self.row_count = row_count
+
+
 def _parse_int(value: object) -> int:
     try:
         return int(str(value).strip())
@@ -57,6 +65,20 @@ def _committee_fetch_complete(row: Dict[str, object]) -> bool:
     if total_pages_reported <= 0:
         return pages_fetched > 0
     return pages_fetched >= total_pages_reported
+
+
+def load_latest_committee_rows(manifest_path: Path) -> Dict[str, Dict[str, str]]:
+    if not manifest_path.exists():
+        return {}
+
+    latest_rows: Dict[str, Dict[str, str]] = {}
+    with manifest_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            committee_id = row.get("committee_id")
+            if committee_id:
+                latest_rows[committee_id] = row
+    return latest_rows
 
 
 def parse_args() -> argparse.Namespace:
@@ -182,16 +204,12 @@ def build_dataset_paths(source: str, individual_only: bool) -> tuple[Path, Path,
 
 
 def load_completed_committee_ids(manifest_path: Path) -> Set[str]:
-    if not manifest_path.exists():
-        return set()
-
-    completed: Set[str] = set()
-    with manifest_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            if row.get("committee_id") and _committee_fetch_complete(row):
-                completed.add(row["committee_id"])
-    return completed
+    latest_rows = load_latest_committee_rows(manifest_path)
+    return {
+        committee_id
+        for committee_id, row in latest_rows.items()
+        if row.get("committee_id") and _committee_fetch_complete(row)
+    }
 
 
 def append_manifest_row(manifest_path: Path, row: Dict[str, object]) -> None:
@@ -202,6 +220,32 @@ def append_manifest_row(manifest_path: Path, row: Dict[str, object]) -> None:
         if not file_exists:
             writer.writeheader()
         writer.writerow({field: row.get(field) for field in MANIFEST_FIELDS})
+
+
+def build_manifest_row(
+    committee_row: pd.Series,
+    *,
+    status: str,
+    row_count: int,
+    pages_fetched: int,
+    total_pages_reported: int,
+    error: str,
+) -> Dict[str, object]:
+    return {
+        "committee_id": committee_row.get("committee_id"),
+        "candidate_name": committee_row.get("candidate_name"),
+        "fec_candidate_id": committee_row.get("fec_candidate_id"),
+        "state": committee_row.get("state"),
+        "party": committee_row.get("party"),
+        "party_normalized": committee_row.get("party_normalized"),
+        "source_scope": committee_row.get("source_scope"),
+        "status": status,
+        "row_count": row_count,
+        "pages_fetched": pages_fetched,
+        "total_pages_reported": total_pages_reported,
+        "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        "error": error,
+    }
 
 
 def build_receipt_row(receipt: Dict[str, object], committee_row: pd.Series) -> Dict[str, object]:
@@ -229,7 +273,12 @@ def fetch_committee_receipts(
     per_page: int,
     individual_only: bool,
     max_pages_per_committee: Optional[int],
-) -> tuple[list[Dict[str, object]], int, int]:
+    shard_path: Path,
+    manifest_path: Path,
+    start_page: int = 1,
+    row_count_so_far: int = 0,
+    total_pages_hint: int = 0,
+) -> tuple[int, int, int]:
     committee_id = committee_row["committee_id"]
     params = {
         "committee_id": committee_id,
@@ -241,41 +290,86 @@ def fetch_committee_receipts(
     if individual_only:
         params["is_individual"] = True
 
-    page = 1
-    total_pages_reported = 1
-    receipts: list[Dict[str, object]] = []
+    page = max(start_page, 1)
+    pages_fetched = max(start_page - 1, 0)
+    total_pages_reported = max(total_pages_hint, 0)
+    overwrite_shard = page == 1
+    row_count = row_count_so_far
 
     while True:
         page_params = params.copy()
         page_params["page"] = page
-        data = client.get("/schedules/schedule_a/", params=page_params)
+        try:
+            data = client.get("/schedules/schedule_a/", params=page_params)
+        except Exception as exc:
+            raise CommitteeFetchError(
+                str(exc),
+                pages_fetched=pages_fetched,
+                total_pages_reported=total_pages_reported,
+                row_count=row_count,
+            ) from exc
         results = data.get("results", [])
         if not isinstance(results, list):
-            raise ValueError(f"Unexpected Schedule A response for committee {committee_id}")
-
-        receipts.extend(build_receipt_row(result, committee_row) for result in results)
+            raise CommitteeFetchError(
+                f"Unexpected Schedule A response for committee {committee_id}",
+                pages_fetched=pages_fetched,
+                total_pages_reported=total_pages_reported,
+                row_count=row_count,
+            )
 
         pagination = data.get("pagination", {})
         current_page = pagination.get("page", page)
         total_pages_reported = pagination.get("pages", current_page)
+        page_rows = [build_receipt_row(result, committee_row) for result in results]
+
+        rows_written = save_committee_shard(shard_path, page_rows, overwrite=overwrite_shard)
+        overwrite_shard = False
+        row_count += rows_written
+        pages_fetched = current_page
+
+        is_complete = total_pages_reported <= 0 or current_page >= total_pages_reported
+        status = "ok" if is_complete else "partial"
+        append_manifest_row(
+            manifest_path,
+            build_manifest_row(
+                committee_row,
+                status=status,
+                row_count=row_count,
+                pages_fetched=pages_fetched,
+                total_pages_reported=total_pages_reported,
+                error="",
+            ),
+        )
+
+        if current_page == start_page or current_page % 25 == 0 or is_complete:
+            print(
+                f"  Page {current_page}/{total_pages_reported or '?'} saved "
+                f"({row_count} rows total)",
+                flush=True,
+            )
 
         if max_pages_per_committee is not None and current_page >= max_pages_per_committee:
             break
-        if current_page >= total_pages_reported:
+        if is_complete:
             break
 
         page = current_page + 1
 
-    return receipts, current_page, total_pages_reported
+    return row_count, pages_fetched, total_pages_reported
 
 
-def save_committee_shard(path: Path, rows: Iterable[Dict[str, object]]) -> int:
+def save_committee_shard(path: Path, rows: Iterable[Dict[str, object]], overwrite: bool = False) -> int:
     rows = list(rows)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if overwrite and path.exists():
+        path.unlink()
+
     if not rows:
         return 0
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(path, index=False)
+    file_exists = path.exists()
+    pd.DataFrame(rows).to_csv(path, mode="a", header=not file_exists, index=False)
     return len(rows)
 
 
@@ -310,6 +404,7 @@ def main() -> None:
     print(f"Request interval seconds: {client.request_interval_seconds}")
 
     shards_dir.mkdir(parents=True, exist_ok=True)
+    latest_rows = load_latest_committee_rows(manifest_path)
 
     for index, (_, committee_row) in enumerate(targets.iterrows(), start=1):
         committee_id = committee_row["committee_id"]
@@ -317,55 +412,57 @@ def main() -> None:
         candidate_name = committee_row.get("candidate_name")
         print(f"[{index}/{len(targets)}] Fetching committee {committee_id} for {candidate_name}")
 
+        latest_row = latest_rows.get(committee_id)
+        pages_fetched_so_far = _parse_int(latest_row.get("pages_fetched")) if latest_row else 0
+        total_pages_hint = _parse_int(latest_row.get("total_pages_reported")) if latest_row else 0
+        row_count_so_far = _parse_int(latest_row.get("row_count")) if latest_row else 0
+
+        if pages_fetched_so_far > 0 and shard_path.exists():
+            start_page = pages_fetched_so_far + 1
+            print(
+                f"  Resuming from page {start_page} after {pages_fetched_so_far} pages "
+                f"({row_count_so_far} rows saved)",
+                flush=True,
+            )
+        else:
+            start_page = 1
+            row_count_so_far = 0
+
         try:
-            receipts, pages_fetched, total_pages_reported = fetch_committee_receipts(
+            row_count, pages_fetched, total_pages_reported = fetch_committee_receipts(
                 client=client,
                 committee_row=committee_row,
                 per_page=args.per_page,
                 individual_only=args.individual_only,
                 max_pages_per_committee=args.max_pages_per_committee,
+                shard_path=shard_path,
+                manifest_path=manifest_path,
+                start_page=start_page,
+                row_count_so_far=row_count_so_far,
+                total_pages_hint=total_pages_hint,
             )
-            row_count = save_committee_shard(shard_path, receipts)
-            status = "ok"
-            if args.max_pages_per_committee is not None and pages_fetched < total_pages_reported:
-                status = "partial"
+            latest_rows[committee_id] = build_manifest_row(
+                committee_row,
+                status="ok",
+                row_count=row_count,
+                pages_fetched=pages_fetched,
+                total_pages_reported=total_pages_reported,
+                error="",
+            )
+        except CommitteeFetchError as exc:
+            error_row = build_manifest_row(
+                committee_row,
+                status="error",
+                row_count=exc.row_count,
+                pages_fetched=exc.pages_fetched,
+                total_pages_reported=exc.total_pages_reported,
+                error=str(exc),
+            )
             append_manifest_row(
                 manifest_path,
-                {
-                    "committee_id": committee_id,
-                    "candidate_name": committee_row.get("candidate_name"),
-                    "fec_candidate_id": committee_row.get("fec_candidate_id"),
-                    "state": committee_row.get("state"),
-                    "party": committee_row.get("party"),
-                    "party_normalized": committee_row.get("party_normalized"),
-                    "source_scope": committee_row.get("source_scope"),
-                    "status": status,
-                    "row_count": row_count,
-                    "pages_fetched": pages_fetched,
-                    "total_pages_reported": total_pages_reported,
-                    "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
-                    "error": "",
-                },
+                error_row,
             )
-        except Exception as exc:
-            append_manifest_row(
-                manifest_path,
-                {
-                    "committee_id": committee_id,
-                    "candidate_name": committee_row.get("candidate_name"),
-                    "fec_candidate_id": committee_row.get("fec_candidate_id"),
-                    "state": committee_row.get("state"),
-                    "party": committee_row.get("party"),
-                    "party_normalized": committee_row.get("party_normalized"),
-                    "source_scope": committee_row.get("source_scope"),
-                    "status": "error",
-                    "row_count": 0,
-                    "pages_fetched": 0,
-                    "total_pages_reported": 0,
-                    "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
-                    "error": str(exc),
-                },
-            )
+            latest_rows[committee_id] = error_row
             print(f"  Failed: {exc}")
 
     combined = combine_shards(shards_dir, allowed_committee_ids=all_target_committee_ids)
