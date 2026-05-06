@@ -37,17 +37,29 @@ MANIFEST_FIELDS = [
     "row_count",
     "pages_fetched",
     "total_pages_reported",
+    "last_index",
+    "last_contribution_receipt_date",
     "fetched_at",
     "error",
 ]
 
 
 class CommitteeFetchError(Exception):
-    def __init__(self, message: str, pages_fetched: int, total_pages_reported: int, row_count: int):
+    def __init__(
+        self,
+        message: str,
+        pages_fetched: int,
+        total_pages_reported: int,
+        row_count: int,
+        last_index: Optional[str] = None,
+        last_contribution_receipt_date: Optional[str] = None,
+    ):
         super().__init__(message)
         self.pages_fetched = pages_fetched
         self.total_pages_reported = total_pages_reported
         self.row_count = row_count
+        self.last_index = last_index
+        self.last_contribution_receipt_date = last_contribution_receipt_date
 
 
 def _parse_int(value: object) -> int:
@@ -55,6 +67,13 @@ def _parse_int(value: object) -> int:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return 0
+
+
+def _clean_optional_string(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def _committee_fetch_complete(row: Dict[str, object]) -> bool:
@@ -229,6 +248,8 @@ def build_manifest_row(
     row_count: int,
     pages_fetched: int,
     total_pages_reported: int,
+    last_index: Optional[str],
+    last_contribution_receipt_date: Optional[str],
     error: str,
 ) -> Dict[str, object]:
     return {
@@ -243,6 +264,8 @@ def build_manifest_row(
         "row_count": row_count,
         "pages_fetched": pages_fetched,
         "total_pages_reported": total_pages_reported,
+        "last_index": last_index or "",
+        "last_contribution_receipt_date": last_contribution_receipt_date or "",
         "fetched_at": pd.Timestamp.now(tz="UTC").isoformat(),
         "error": error,
     }
@@ -275,10 +298,12 @@ def fetch_committee_receipts(
     max_pages_per_committee: Optional[int],
     shard_path: Path,
     manifest_path: Path,
-    start_page: int = 1,
+    pages_fetched_so_far: int = 0,
     row_count_so_far: int = 0,
     total_pages_hint: int = 0,
-) -> tuple[int, int, int]:
+    last_index_so_far: Optional[str] = None,
+    last_contribution_receipt_date_so_far: Optional[str] = None,
+) -> tuple[int, int, int, Optional[str], Optional[str]]:
     committee_id = committee_row["committee_id"]
     params = {
         "committee_id": committee_id,
@@ -290,15 +315,21 @@ def fetch_committee_receipts(
     if individual_only:
         params["is_individual"] = True
 
-    page = max(start_page, 1)
-    pages_fetched = max(start_page - 1, 0)
+    pages_fetched = max(pages_fetched_so_far, 0)
     total_pages_reported = max(total_pages_hint, 0)
-    overwrite_shard = page == 1
+    overwrite_shard = pages_fetched == 0
     row_count = row_count_so_far
+    last_index = _clean_optional_string(last_index_so_far)
+    last_contribution_receipt_date = _clean_optional_string(last_contribution_receipt_date_so_far)
 
+    # Schedule A page-number pagination can repeat the first 100 rows on large
+    # result sets, so we resume with the API's keyset cursor instead.
     while True:
         page_params = params.copy()
-        page_params["page"] = page
+        if last_index:
+            page_params["last_index"] = last_index
+        if last_contribution_receipt_date:
+            page_params["last_contribution_receipt_date"] = last_contribution_receipt_date
         try:
             data = client.get("/schedules/schedule_a/", params=page_params)
         except Exception as exc:
@@ -307,6 +338,8 @@ def fetch_committee_receipts(
                 pages_fetched=pages_fetched,
                 total_pages_reported=total_pages_reported,
                 row_count=row_count,
+                last_index=last_index,
+                last_contribution_receipt_date=last_contribution_receipt_date,
             ) from exc
         results = data.get("results", [])
         if not isinstance(results, list):
@@ -315,19 +348,39 @@ def fetch_committee_receipts(
                 pages_fetched=pages_fetched,
                 total_pages_reported=total_pages_reported,
                 row_count=row_count,
+                last_index=last_index,
+                last_contribution_receipt_date=last_contribution_receipt_date,
             )
 
-        pagination = data.get("pagination", {})
-        current_page = pagination.get("page", page)
-        total_pages_reported = pagination.get("pages", current_page)
+        pages_fetched += 1
+        pagination = data.get("pagination", {}) or {}
+        current_page = _parse_int(pagination.get("page")) or pages_fetched
+        total_pages_reported = _parse_int(pagination.get("pages")) or total_pages_reported or current_page
+        last_indexes = pagination.get("last_indexes", {}) or {}
+        next_last_index = _clean_optional_string(last_indexes.get("last_index"))
+        next_last_contribution_receipt_date = _clean_optional_string(
+            last_indexes.get("last_contribution_receipt_date")
+        )
+        resume_last_index = next_last_index or last_index
+        resume_last_contribution_receipt_date = (
+            next_last_contribution_receipt_date or last_contribution_receipt_date
+        )
         page_rows = [build_receipt_row(result, committee_row) for result in results]
 
         rows_written = save_committee_shard(shard_path, page_rows, overwrite=overwrite_shard)
         overwrite_shard = False
         row_count += rows_written
-        pages_fetched = current_page
 
-        is_complete = total_pages_reported <= 0 or current_page >= total_pages_reported
+        is_complete = False
+        if not results:
+            is_complete = True
+        elif max_pages_per_committee is not None and pages_fetched >= max_pages_per_committee:
+            is_complete = False
+        elif total_pages_reported > 0 and pages_fetched >= total_pages_reported:
+            is_complete = True
+        elif not next_last_index or next_last_index == last_index:
+            is_complete = True
+
         status = "ok" if is_complete else "partial"
         append_manifest_row(
             manifest_path,
@@ -337,25 +390,32 @@ def fetch_committee_receipts(
                 row_count=row_count,
                 pages_fetched=pages_fetched,
                 total_pages_reported=total_pages_reported,
+                last_index=resume_last_index,
+                last_contribution_receipt_date=resume_last_contribution_receipt_date,
                 error="",
             ),
         )
 
-        if current_page == start_page or current_page % 25 == 0 or is_complete:
+        if pages_fetched == max(pages_fetched_so_far + 1, 1) or pages_fetched % 25 == 0 or is_complete:
             print(
-                f"  Page {current_page}/{total_pages_reported or '?'} saved "
+                f"  Page {pages_fetched}/{total_pages_reported or '?'} saved "
                 f"({row_count} rows total)",
                 flush=True,
             )
 
-        if max_pages_per_committee is not None and current_page >= max_pages_per_committee:
+        if max_pages_per_committee is not None and pages_fetched >= max_pages_per_committee:
+            last_index = resume_last_index
+            last_contribution_receipt_date = resume_last_contribution_receipt_date
             break
         if is_complete:
+            last_index = resume_last_index
+            last_contribution_receipt_date = resume_last_contribution_receipt_date
             break
 
-        page = current_page + 1
+        last_index = resume_last_index
+        last_contribution_receipt_date = resume_last_contribution_receipt_date
 
-    return row_count, pages_fetched, total_pages_reported
+    return row_count, pages_fetched, total_pages_reported, last_index, last_contribution_receipt_date
 
 
 def save_committee_shard(path: Path, rows: Iterable[Dict[str, object]], overwrite: bool = False) -> int:
@@ -416,20 +476,43 @@ def main() -> None:
         pages_fetched_so_far = _parse_int(latest_row.get("pages_fetched")) if latest_row else 0
         total_pages_hint = _parse_int(latest_row.get("total_pages_reported")) if latest_row else 0
         row_count_so_far = _parse_int(latest_row.get("row_count")) if latest_row else 0
+        last_index_so_far = _clean_optional_string(latest_row.get("last_index")) if latest_row else None
+        last_contribution_receipt_date_so_far = (
+            _clean_optional_string(latest_row.get("last_contribution_receipt_date")) if latest_row else None
+        )
 
         if pages_fetched_so_far > 0 and shard_path.exists():
-            start_page = pages_fetched_so_far + 1
-            print(
-                f"  Resuming from page {start_page} after {pages_fetched_so_far} pages "
-                f"({row_count_so_far} rows saved)",
-                flush=True,
-            )
+            if last_index_so_far:
+                print(
+                    f"  Resuming from page {pages_fetched_so_far + 1} after {pages_fetched_so_far} pages "
+                    f"({row_count_so_far} rows saved)",
+                    flush=True,
+                )
+            else:
+                print(
+                    "  Existing progress predates cursor checkpointing; restarting this committee from scratch.",
+                    flush=True,
+                )
+                pages_fetched_so_far = 0
+                total_pages_hint = 0
+                row_count_so_far = 0
+                last_index_so_far = None
+                last_contribution_receipt_date_so_far = None
         else:
-            start_page = 1
             row_count_so_far = 0
+            pages_fetched_so_far = 0
+            total_pages_hint = 0
+            last_index_so_far = None
+            last_contribution_receipt_date_so_far = None
 
         try:
-            row_count, pages_fetched, total_pages_reported = fetch_committee_receipts(
+            (
+                row_count,
+                pages_fetched,
+                total_pages_reported,
+                last_index,
+                last_contribution_receipt_date,
+            ) = fetch_committee_receipts(
                 client=client,
                 committee_row=committee_row,
                 per_page=args.per_page,
@@ -437,16 +520,23 @@ def main() -> None:
                 max_pages_per_committee=args.max_pages_per_committee,
                 shard_path=shard_path,
                 manifest_path=manifest_path,
-                start_page=start_page,
+                pages_fetched_so_far=pages_fetched_so_far,
                 row_count_so_far=row_count_so_far,
                 total_pages_hint=total_pages_hint,
+                last_index_so_far=last_index_so_far,
+                last_contribution_receipt_date_so_far=last_contribution_receipt_date_so_far,
             )
+            status = "ok"
+            if args.max_pages_per_committee is not None and pages_fetched < total_pages_reported:
+                status = "partial"
             latest_rows[committee_id] = build_manifest_row(
                 committee_row,
-                status="ok",
+                status=status,
                 row_count=row_count,
                 pages_fetched=pages_fetched,
                 total_pages_reported=total_pages_reported,
+                last_index=last_index,
+                last_contribution_receipt_date=last_contribution_receipt_date,
                 error="",
             )
         except CommitteeFetchError as exc:
@@ -456,6 +546,8 @@ def main() -> None:
                 row_count=exc.row_count,
                 pages_fetched=exc.pages_fetched,
                 total_pages_reported=exc.total_pages_reported,
+                last_index=exc.last_index,
+                last_contribution_receipt_date=exc.last_contribution_receipt_date,
                 error=str(exc),
             )
             append_manifest_row(

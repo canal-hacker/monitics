@@ -1,0 +1,12 @@
+party_normalized,metric_group,metric_key,metric_label,amount,share_of_metric_total,trusted_for_mvp,note
+DEM,direct_money,total_receipts,Total receipts,399033884.17,0.6491170968446464,True,Trusted current-cycle campaign receipts from selected candidate committees.
+REP,direct_money,total_receipts,Total receipts,215699399.1,0.35088290315535364,True,Trusted current-cycle campaign receipts from selected candidate committees.
+DEM,direct_money,cash_on_hand,Cash on hand,233382881.75,0.5331068312569655,True,Trusted end-of-period cash for selected candidate committees.
+REP,direct_money,cash_on_hand,Cash on hand,204395942.43,0.46689316874303455,True,Trusted end-of-period cash for selected candidate committees.
+DEM,outside_money,ie_total_amount,Outside spending total,12004386.77,0.358742100809637,True,Trusted default-view independent expenditures targeting selected candidates.
+REP,outside_money,ie_total_amount,Outside spending total,21458055.310000002,0.641257899190363,True,Trusted default-view independent expenditures targeting selected candidates.
+DEM,outside_money,ie_support_amount,Outside support,5445394.430000001,0.2977183058163871,True,Supportive independent expenditures for selected candidates.
+REP,outside_money,ie_support_amount,Outside support,12845030.86,0.702281694183613,True,Supportive independent expenditures for selected candidates.
+DEM,outside_money,ie_oppose_amount,Outside opposition,6558992.34,0.4323085342433238,True,Opposing independent expenditures for selected candidates.
+REP,outside_money,ie_oppose_amount,Outside opposition,8613024.450000001,0.5676914657566762,True,Opposing independent expenditures for selected candidates.
+ALL,outside_money,dark_money_total,Dark money total,,,False,Not available yet. This requires classifying outside spenders and disclosure status; candidate donor receipts do not answer it.
